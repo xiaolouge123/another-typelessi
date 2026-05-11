@@ -1,0 +1,8 @@
+.build/
+build/
+DerivedData/
+.DS_Store
+.env
+.env.*
+config.json
+usage.json
