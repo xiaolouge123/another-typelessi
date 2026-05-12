@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsStore()
     private let usageStore = UsageStore()
     private let audioRecorder = AudioRecorder()
+    private let outputDuckingCoordinator = SystemOutputDuckingCoordinator()
     private let openRouter = OpenRouterClient()
     private let injector = TextInjector()
     private lazy var preferencesWindowController = PreferencesWindowController(
@@ -34,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         audioRecorder.cancel()
+        outputDuckingCoordinator.restoreAfterRecording()
         processingTask?.cancel()
         floatingStatusWindowController.hide()
         hotKeyCenter?.unregister()
@@ -249,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         processingTask?.cancel()
         processingTask = nil
         audioRecorder.cancel()
+        outputDuckingCoordinator.restoreAfterRecording()
 
         isArming = false
         isRecording = false
@@ -305,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         do {
+            outputDuckingCoordinator.duckForRecording(level: Float(settings.duckingLevel))
             _ = try audioRecorder.start()
             isArming = false
             isRecording = true
@@ -315,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isArming = false
             isRecording = false
             audioRecorder.cancel()
+            outputDuckingCoordinator.restoreAfterRecording()
             rebuildMenu()
             updateStatusTitle("Error")
             floatingStatusWindowController.showError(error.localizedDescription)
@@ -339,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishRecording() {
         do {
             let audioURL = try audioRecorder.stop()
+            outputDuckingCoordinator.restoreAfterRecording()
             isRecording = false
             isProcessing = true
             rebuildMenu()
@@ -349,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isRecording = false
             isProcessing = false
             audioRecorder.cancel()
+            outputDuckingCoordinator.restoreAfterRecording()
             rebuildMenu()
             updateStatusTitle("Error")
             floatingStatusWindowController.showError(error.localizedDescription)

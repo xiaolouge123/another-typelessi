@@ -12,6 +12,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var cleanFillers: Bool
     @Published var polishWithGPT: Bool
     @Published var restoreClipboard: Bool
+    @Published var duckingLevel: Double
     @Published var configFilePath: String
     @Published var usageFilePath: String
     @Published var usageSummaries: [WeeklyModelUsage] = []
@@ -31,6 +32,7 @@ final class SettingsViewModel: ObservableObject {
         self.cleanFillers = settings.cleanFillers
         self.polishWithGPT = settings.polishWithGPT
         self.restoreClipboard = settings.restoreClipboard
+        self.duckingLevel = settings.duckingLevel
         self.configFilePath = settings.configFileURL.path
         self.usageFilePath = usageStore.usageFileURL.path
         self.hasStoredAPIKey = settings.apiKey != nil
@@ -51,8 +53,11 @@ final class SettingsViewModel: ObservableObject {
                 cleanFillers: cleanFillers,
                 polishWithGPT: polishWithGPT,
                 restoreClipboard: restoreClipboard,
+                duckingLevel: duckingLevel,
                 apiKey: trimmedAPIKey.isEmpty ? nil : trimmedAPIKey
             )
+
+            duckingLevel = settings.duckingLevel
 
             if !trimmedAPIKey.isEmpty {
                 apiKey = ""
@@ -85,6 +90,7 @@ final class SettingsViewModel: ObservableObject {
         cleanFillers = true
         polishWithGPT = true
         restoreClipboard = true
+        duckingLevel = SettingsStore.defaultDuckingLevel
         statusMessage = "Defaults loaded; click Save"
     }
 

@@ -95,6 +95,8 @@ private struct PreferencesView: View {
                         Toggle("Clean filler words locally", isOn: $viewModel.cleanFillers)
                         Toggle("Formalize with GPT-5.4 Mini", isOn: $viewModel.polishWithGPT)
                         Toggle("Restore clipboard after paste", isOn: $viewModel.restoreClipboard)
+
+                        DuckingLevelControl(level: $viewModel.duckingLevel)
                     }
                     .padding(.top, 4)
                 }
@@ -156,6 +158,33 @@ private struct PreferencesView: View {
             .frame(width: 920, alignment: .topLeading)
         }
         .frame(width: 920, height: 760)
+    }
+}
+
+private struct DuckingLevelControl: View {
+    @Binding var level: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Duck other audio while recording")
+                Spacer()
+                Text(percentText)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Slider(value: $level, in: 0...1, step: 0.05)
+
+            Text("0% silences other audio; 100% keeps it unchanged. Defaults to 10%.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var percentText: String {
+        let clamped = max(0, min(1, level))
+        return "\(Int((clamped * 100).rounded()))%"
     }
 }
 

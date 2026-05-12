@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 final class AudioRecorder {
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var currentURL: URL?
     private var hasInputTap = false
@@ -16,17 +16,17 @@ final class AudioRecorder {
         cancel()
         recordingError = nil
 
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
             throw AudioRecorderError.microphoneUnavailable
         }
 
         let url = try makeRecordingURL()
-        let file = try AVAudioFile(forWriting: url, settings: inputFormat.settings)
+        let file = try AVAudioFile(forWriting: url, settings: recordingFormat.settings)
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { [weak self] buffer, _ in
             guard let self else {
                 return
             }
@@ -41,16 +41,24 @@ final class AudioRecorder {
         hasInputTap = true
         audioFile = file
         currentURL = url
+        audioEngine = engine
 
-        audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            cancel()
+            throw error
+        }
 
         return url
     }
 
     func stop() throws -> URL {
-        audioEngine.stop()
+        audioEngine?.stop()
         removeInputTapIfNeeded()
+        audioEngine?.reset()
+        audioEngine = nil
         audioFile = nil
 
         if let recordingError {
@@ -67,8 +75,10 @@ final class AudioRecorder {
     }
 
     func cancel() {
-        audioEngine.stop()
+        audioEngine?.stop()
         removeInputTapIfNeeded()
+        audioEngine?.reset()
+        audioEngine = nil
         audioFile = nil
 
         if let currentURL {
@@ -81,7 +91,7 @@ final class AudioRecorder {
 
     private func removeInputTapIfNeeded() {
         if hasInputTap {
-            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine?.inputNode.removeTap(onBus: 0)
             hasInputTap = false
         }
     }

@@ -117,6 +117,16 @@ final class SettingsStore {
         }
     }
 
+    var duckingLevel: Double {
+        get {
+            configuration.duckingLevel
+        }
+        set {
+            configuration.duckingLevel = Self.clampDuckingLevel(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
     var baseURLString: String {
         get {
             configuration.baseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultBaseURLString
@@ -160,6 +170,7 @@ final class SettingsStore {
         cleanFillers: Bool,
         polishWithGPT: Bool,
         restoreClipboard: Bool,
+        duckingLevel: Double,
         apiKey: String?
     ) throws {
         configuration.baseURL = Self.normalizeBaseURLString(baseURLString)
@@ -170,6 +181,7 @@ final class SettingsStore {
         configuration.cleanFillers = cleanFillers
         configuration.polishWithGPT = polishWithGPT
         configuration.restoreClipboard = restoreClipboard
+        configuration.duckingLevel = Self.clampDuckingLevel(duckingLevel)
 
         if let apiKey {
             configuration.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,6 +199,11 @@ final class SettingsStore {
     static let defaultTranscriptionModel = "openai/whisper-large-v3-turbo"
     static let defaultPolishModel = "openai/gpt-5.4-mini"
     static let defaultLanguage = RecognitionLanguage.auto
+    static let defaultDuckingLevel: Double = 0.1
+
+    fileprivate static func clampDuckingLevel(_ value: Double) -> Double {
+        max(0, min(1, value))
+    }
 
     private func persist() throws {
         let directory = configFileURL.deletingLastPathComponent()
@@ -292,6 +309,7 @@ private struct Configuration: Codable {
     var cleanFillers: Bool
     var polishWithGPT: Bool
     var restoreClipboard: Bool
+    var duckingLevel: Double
 
     init() {
         self.apiKey = ""
@@ -303,6 +321,7 @@ private struct Configuration: Codable {
         self.cleanFillers = true
         self.polishWithGPT = true
         self.restoreClipboard = true
+        self.duckingLevel = SettingsStore.defaultDuckingLevel
     }
 
     init(from decoder: Decoder) throws {
@@ -320,6 +339,8 @@ private struct Configuration: Codable {
         self.cleanFillers = try container.decodeIfPresent(Bool.self, forKey: .cleanFillers) ?? true
         self.polishWithGPT = try container.decodeIfPresent(Bool.self, forKey: .polishWithGPT) ?? true
         self.restoreClipboard = try container.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? true
+        let rawDucking = try container.decodeIfPresent(Double.self, forKey: .duckingLevel) ?? SettingsStore.defaultDuckingLevel
+        self.duckingLevel = SettingsStore.clampDuckingLevel(rawDucking)
     }
 }
 
