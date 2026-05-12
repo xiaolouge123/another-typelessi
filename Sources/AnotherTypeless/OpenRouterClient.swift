@@ -79,6 +79,11 @@ final class OpenRouterClient {
                     If a term, name, number, or factual claim is ambiguous, preserve the transcript instead of guessing.
                     Do not fact-check the user's claims against outside knowledge, and do not replace a stated fact just because it might be wrong.
 
+                    Spoken dictation can have reversed, interrupted, or scattered word order.
+                    You may reorder clauses and sentences to make the writing coherent and natural, as long as the original meaning, emphasis, and intent are preserved.
+                    Move context before conclusions when that improves readability, merge fragmented clauses, and remove repeated detours caused by self-correction.
+                    Keep the user's level of certainty; do not turn tentative wording into definitive claims.
+
                     Be proactive about structure when the transcript contains multiple ideas:
                     - Group related points together.
                     - Add numbered lists when the user implies ordered points, steps, reasons, requirements, or options.
@@ -97,6 +102,7 @@ final class OpenRouterClient {
                     Language mode: \(language.title)
                     Do not translate. Polish in the transcript's original language.
                     Use the full transcript context to fix likely speech-recognition mistakes, but only when the intended wording is strongly implied.
+                    Reorder scattered spoken phrasing into clearer written order without changing the user's meaning.
                     If the transcript naturally contains several points, organize them into a cleaner written format.
 
                     Transcript:
