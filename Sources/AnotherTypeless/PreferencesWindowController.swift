@@ -97,6 +97,8 @@ private struct PreferencesView: View {
                         Toggle("Restore clipboard after paste", isOn: $viewModel.restoreClipboard)
 
                         DuckingLevelControl(level: $viewModel.duckingLevel)
+
+                        MicrophonePreferenceControl(selection: $viewModel.preferredMicrophone)
                     }
                     .padding(.top, 4)
                 }
@@ -158,6 +160,26 @@ private struct PreferencesView: View {
             .frame(width: 920, alignment: .topLeading)
         }
         .frame(width: 920, height: 760)
+    }
+}
+
+private struct MicrophonePreferenceControl: View {
+    @Binding var selection: MicrophonePreference
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker("Microphone", selection: $selection) {
+                ForEach(MicrophonePreference.allCases, id: \.self) { preference in
+                    Text(preference.title).tag(preference)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(selection.explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

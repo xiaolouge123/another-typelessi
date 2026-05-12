@@ -14,6 +14,29 @@ enum OutputMode: String, CaseIterable, Codable {
     }
 }
 
+enum MicrophonePreference: String, CaseIterable, Codable {
+    case systemDefault
+    case builtIn
+
+    var title: String {
+        switch self {
+        case .systemDefault:
+            return "System Default"
+        case .builtIn:
+            return "Always Built-in Mic"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .systemDefault:
+            return "Uses whatever microphone macOS has selected. Bluetooth headsets will drop into call (HFP) mode while recording, which narrows their soundstage and audio quality."
+        case .builtIn:
+            return "Forces recording to the Mac's built-in microphone, so Bluetooth headphones stay in high-fidelity (A2DP) mode and their soundstage is preserved."
+        }
+    }
+}
+
 enum RecognitionLanguage: String, CaseIterable, Codable {
     case auto = "auto"
     case zhCN = "zh"
@@ -127,6 +150,16 @@ final class SettingsStore {
         }
     }
 
+    var preferredMicrophone: MicrophonePreference {
+        get {
+            configuration.preferredMicrophone
+        }
+        set {
+            configuration.preferredMicrophone = newValue
+            persistIgnoringErrors()
+        }
+    }
+
     var baseURLString: String {
         get {
             configuration.baseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultBaseURLString
@@ -171,6 +204,7 @@ final class SettingsStore {
         polishWithGPT: Bool,
         restoreClipboard: Bool,
         duckingLevel: Double,
+        preferredMicrophone: MicrophonePreference,
         apiKey: String?
     ) throws {
         configuration.baseURL = Self.normalizeBaseURLString(baseURLString)
@@ -182,6 +216,7 @@ final class SettingsStore {
         configuration.polishWithGPT = polishWithGPT
         configuration.restoreClipboard = restoreClipboard
         configuration.duckingLevel = Self.clampDuckingLevel(duckingLevel)
+        configuration.preferredMicrophone = preferredMicrophone
 
         if let apiKey {
             configuration.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -200,6 +235,7 @@ final class SettingsStore {
     static let defaultPolishModel = "openai/gpt-5.4-mini"
     static let defaultLanguage = RecognitionLanguage.auto
     static let defaultDuckingLevel: Double = 0.1
+    static let defaultMicrophonePreference: MicrophonePreference = .systemDefault
 
     fileprivate static func clampDuckingLevel(_ value: Double) -> Double {
         max(0, min(1, value))
@@ -310,6 +346,7 @@ private struct Configuration: Codable {
     var polishWithGPT: Bool
     var restoreClipboard: Bool
     var duckingLevel: Double
+    var preferredMicrophone: MicrophonePreference
 
     init() {
         self.apiKey = ""
@@ -322,6 +359,7 @@ private struct Configuration: Codable {
         self.polishWithGPT = true
         self.restoreClipboard = true
         self.duckingLevel = SettingsStore.defaultDuckingLevel
+        self.preferredMicrophone = SettingsStore.defaultMicrophonePreference
     }
 
     init(from decoder: Decoder) throws {
@@ -341,6 +379,8 @@ private struct Configuration: Codable {
         self.restoreClipboard = try container.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? true
         let rawDucking = try container.decodeIfPresent(Double.self, forKey: .duckingLevel) ?? SettingsStore.defaultDuckingLevel
         self.duckingLevel = SettingsStore.clampDuckingLevel(rawDucking)
+        let micRaw = try container.decodeIfPresent(String.self, forKey: .preferredMicrophone) ?? ""
+        self.preferredMicrophone = MicrophonePreference(rawValue: micRaw) ?? SettingsStore.defaultMicrophonePreference
     }
 }
 

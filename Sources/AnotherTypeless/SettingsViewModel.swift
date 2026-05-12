@@ -13,6 +13,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var polishWithGPT: Bool
     @Published var restoreClipboard: Bool
     @Published var duckingLevel: Double
+    @Published var preferredMicrophone: MicrophonePreference
     @Published var configFilePath: String
     @Published var usageFilePath: String
     @Published var usageSummaries: [WeeklyModelUsage] = []
@@ -33,6 +34,7 @@ final class SettingsViewModel: ObservableObject {
         self.polishWithGPT = settings.polishWithGPT
         self.restoreClipboard = settings.restoreClipboard
         self.duckingLevel = settings.duckingLevel
+        self.preferredMicrophone = settings.preferredMicrophone
         self.configFilePath = settings.configFileURL.path
         self.usageFilePath = usageStore.usageFileURL.path
         self.hasStoredAPIKey = settings.apiKey != nil
@@ -54,6 +56,7 @@ final class SettingsViewModel: ObservableObject {
                 polishWithGPT: polishWithGPT,
                 restoreClipboard: restoreClipboard,
                 duckingLevel: duckingLevel,
+                preferredMicrophone: preferredMicrophone,
                 apiKey: trimmedAPIKey.isEmpty ? nil : trimmedAPIKey
             )
 
@@ -91,6 +94,7 @@ final class SettingsViewModel: ObservableObject {
         polishWithGPT = true
         restoreClipboard = true
         duckingLevel = SettingsStore.defaultDuckingLevel
+        preferredMicrophone = SettingsStore.defaultMicrophonePreference
         statusMessage = "Defaults loaded; click Save"
     }
 

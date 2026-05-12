@@ -309,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             outputDuckingCoordinator.duckForRecording(level: Float(settings.duckingLevel))
-            _ = try audioRecorder.start()
+            _ = try audioRecorder.start(microphone: settings.preferredMicrophone)
             isArming = false
             isRecording = true
             rebuildMenu()

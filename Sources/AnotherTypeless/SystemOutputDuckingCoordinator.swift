@@ -10,6 +10,10 @@ final class SystemOutputDuckingCoordinator {
             return
         }
 
+        guard !Self.isBluetoothDevice(deviceID: deviceID) else {
+            return
+        }
+
         let clampedLevel = max(0, min(1, level))
         let volumes = Self.captureVolumes(for: deviceID)
         guard !volumes.isEmpty else {
@@ -118,6 +122,29 @@ final class SystemOutputDuckingCoordinator {
         var isSettable = DarwinBoolean(false)
         let status = AudioObjectIsPropertySettable(deviceID, &address, &isSettable)
         return status == noErr && isSettable.boolValue
+    }
+
+    private static func isBluetoothDevice(deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        guard AudioObjectHasProperty(deviceID, &address) else {
+            return false
+        }
+
+        var transportType: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &transportType)
+
+        guard status == noErr else {
+            return false
+        }
+
+        return transportType == kAudioDeviceTransportTypeBluetooth
+            || transportType == kAudioDeviceTransportTypeBluetoothLE
     }
 }
 
