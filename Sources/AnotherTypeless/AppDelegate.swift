@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let audioRecorder = AudioRecorder()
     private let outputDuckingCoordinator = SystemOutputDuckingCoordinator()
     private let openRouter = OpenRouterClient()
+    private let deepgram = DeepgramStreamingClient()
     private let injector = TextInjector()
     private lazy var preferencesWindowController = PreferencesWindowController(
         settings: settings,
@@ -18,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKeyCenter: FunctionHotKeyCenter?
     private var processingTask: Task<Void, Never>?
+    private var streamingTask: Task<DeepgramTranscriptResult, Error>?
+    private var streamingAPIKey: String?
+    private var streamingModel: String?
+    private var streamingLanguage: RecognitionLanguage = .auto
     private var isRecording = false
     private var isArming = false
     private var isProcessing = false
@@ -37,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         audioRecorder.cancel()
         outputDuckingCoordinator.restoreAfterRecording()
         processingTask?.cancel()
+        streamingTask?.cancel()
         floatingStatusWindowController.hide()
         hotKeyCenter?.unregister()
         cancelHotKeyCenter.unregister()
@@ -66,12 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.language = language
         rebuildMenu()
         flashStatus(language.title)
-    }
-
-    @objc private func toggleCleanFillers() {
-        settings.cleanFillers.toggle()
-        rebuildMenu()
-        flashStatus(settings.cleanFillers ? "Cleaner On" : "Cleaner Off")
     }
 
     @objc private func togglePolishWithGPT() {
@@ -169,11 +169,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        let cleanItem = NSMenuItem(title: "Clean filler words locally", action: #selector(toggleCleanFillers), keyEquivalent: "")
-        cleanItem.target = self
-        cleanItem.state = settings.cleanFillers ? .on : .off
-        menu.addItem(cleanItem)
-
         let polishItem = NSMenuItem(title: "Formalize with GPT-5.4 Mini", action: #selector(togglePolishWithGPT), keyEquivalent: "")
         polishItem.target = self
         polishItem.state = settings.polishWithGPT ? .on : .off
@@ -250,6 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activeSession = sessionCounter
         processingTask?.cancel()
         processingTask = nil
+        streamingTask?.cancel()
+        streamingTask = nil
+        streamingAPIKey = nil
+        streamingModel = nil
         audioRecorder.cancel()
         outputDuckingCoordinator.restoreAfterRecording()
 
@@ -307,9 +306,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let provider = settings.transcriptionProvider
+        let recordingMode: RecordingMode
+        switch provider {
+        case .deepgram:
+            recordingMode = .livePCM
+        case .openRouterWhisper:
+            recordingMode = .fileBackup
+        }
+
         do {
             outputDuckingCoordinator.duckForRecording(level: Float(settings.duckingLevel))
-            _ = try audioRecorder.start(microphone: settings.preferredMicrophone)
+            _ = try audioRecorder.start(
+                microphone: settings.preferredMicrophone,
+                mode: recordingMode
+            )
+
+            if provider == .deepgram {
+                try startDeepgramStreaming(sessionID: sessionID)
+            }
+
             isArming = false
             isRecording = true
             rebuildMenu()
@@ -318,12 +334,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             isArming = false
             isRecording = false
+            streamingTask?.cancel()
+            streamingTask = nil
+            streamingAPIKey = nil
+            streamingModel = nil
             audioRecorder.cancel()
             outputDuckingCoordinator.restoreAfterRecording()
             rebuildMenu()
             updateStatusTitle("Error")
             floatingStatusWindowController.showError(error.localizedDescription)
             showAlert(title: "Could not start recording", message: error.localizedDescription)
+        }
+    }
+
+    private func startDeepgramStreaming(sessionID: Int) throws {
+        guard let pcmStream = audioRecorder.pcmStream else {
+            throw AudioRecorderError.microphoneUnavailable
+        }
+        guard let apiKey = settings.deepgramAPIKey else {
+            throw DeepgramStreamingError.authenticationFailed("Deepgram API key not configured")
+        }
+
+        let model = settings.deepgramModel
+        let language = settings.language
+        streamingAPIKey = apiKey
+        streamingModel = model
+        streamingLanguage = language
+
+        streamingTask = Task { [deepgram] in
+            try await deepgram.runSession(
+                pcm: pcmStream,
+                apiKey: apiKey,
+                model: model,
+                language: language
+            )
         }
     }
 
@@ -343,17 +387,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishRecording() {
         do {
-            let audioURL = try audioRecorder.stop()
+            let artifacts = try audioRecorder.stop()
             outputDuckingCoordinator.restoreAfterRecording()
             isRecording = false
             isProcessing = true
             rebuildMenu()
             updateStatusTitle("Transcribe")
             floatingStatusWindowController.showTranscribing()
-            processRecording(at: audioURL, sessionID: activeSession)
+            processRecording(artifacts: artifacts, sessionID: activeSession)
         } catch {
             isRecording = false
             isProcessing = false
+            streamingTask?.cancel()
+            streamingTask = nil
+            streamingAPIKey = nil
+            streamingModel = nil
             audioRecorder.cancel()
             outputDuckingCoordinator.restoreAfterRecording()
             rebuildMenu()
@@ -363,61 +411,149 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func processRecording(at audioURL: URL, sessionID: Int) {
-        guard let apiKey = settings.apiKey else {
+    private func processRecording(artifacts: RecordingArtifacts, sessionID: Int) {
+        let provider = settings.transcriptionProvider
+        let language = settings.language
+        let polishWithGPT = settings.polishWithGPT
+        let baseURL = settings.baseURL
+        let transcriptionModel = settings.transcriptionModel
+        let polishModel = settings.polishModel
+        let deepgramModel = settings.deepgramModel
+        let openRouterKey = settings.apiKey
+        let processingStartedAt = Date()
+
+        DictationLogger.shared.log(
+            "session",
+            "begin sessionID=\(sessionID) provider=\(provider.rawValue) language=\(language.rawValue) polish=\(polishWithGPT) recordedSeconds=\(String(format: "%.2f", artifacts.durationSeconds))"
+        )
+
+        if provider == .openRouterWhisper, openRouterKey == nil {
             isProcessing = false
             rebuildMenu()
             updateStatusTitle("No API Key")
             floatingStatusWindowController.showError("Add OpenRouter API key")
             openSettings()
+            if let url = artifacts.audioURL {
+                try? FileManager.default.removeItem(at: url)
+            }
             return
         }
 
-        let language = settings.language
-        let cleanFillers = settings.cleanFillers
-        let polishWithGPT = settings.polishWithGPT
-        let baseURL = settings.baseURL
-        let transcriptionModel = settings.transcriptionModel
-        let polishModel = settings.polishModel
+        if polishWithGPT, openRouterKey == nil {
+            isProcessing = false
+            rebuildMenu()
+            updateStatusTitle("No API Key")
+            floatingStatusWindowController.showError("Add OpenRouter API key for polish")
+            openSettings()
+            if let url = artifacts.audioURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+
+        let activeStreamingTask = streamingTask
+        streamingTask = nil
+        streamingAPIKey = nil
+        streamingModel = nil
 
         processingTask?.cancel()
         let task = Task { [weak self] in
             guard let self else {
-                try? FileManager.default.removeItem(at: audioURL)
+                if let url = artifacts.audioURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                activeStreamingTask?.cancel()
                 return
+            }
+
+            let cleanupAudio: () -> Void = {
+                if let url = artifacts.audioURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
             }
 
             do {
                 try Task.checkCancellation()
+
                 let transcript: String
+                let transcribeStartedAt = Date()
                 do {
-                    let transcribeResult = try await self.openRouter.transcribe(
-                        audioURL: audioURL,
-                        language: language,
-                        baseURL: baseURL,
-                        transcriptionModel: transcriptionModel,
-                        apiKey: apiKey
+                    switch provider {
+                    case .deepgram:
+                        guard let streaming = activeStreamingTask else {
+                            throw DeepgramStreamingError.connectionFailed("Streaming task missing")
+                        }
+                        let result = try await withTaskCancellationHandler {
+                            try await streaming.value
+                        } onCancel: {
+                            streaming.cancel()
+                        }
+                        self.recordUsage(
+                            operation: .transcription,
+                            provider: .deepgram,
+                            requestedModel: deepgramModel,
+                            resolvedModel: result.model,
+                            audioSeconds: result.audioSeconds,
+                            elapsedSeconds: Date().timeIntervalSince(transcribeStartedAt),
+                            cost: result.cost
+                        )
+                        transcript = result.text
+                    case .openRouterWhisper:
+                        guard let audioURL = artifacts.audioURL, let apiKey = openRouterKey else {
+                            throw OpenRouterClientError.invalidResponse
+                        }
+                        let transcribeResult = try await self.openRouter.transcribe(
+                            audioURL: audioURL,
+                            language: language,
+                            baseURL: baseURL,
+                            transcriptionModel: transcriptionModel,
+                            apiKey: apiKey
+                        )
+                        self.recordUsage(
+                            operation: .transcription,
+                            provider: .openrouter,
+                            requestedModel: transcriptionModel,
+                            elapsedSeconds: Date().timeIntervalSince(transcribeStartedAt),
+                            result: transcribeResult
+                        )
+                        transcript = transcribeResult.text
+                        DictationLogger.shared.logText("whisper.transcript", transcript)
+                    }
+                    DictationLogger.shared.log(
+                        "timing",
+                        "transcribe sessionID=\(sessionID) provider=\(provider.rawValue) elapsed=\(Self.formatElapsed(transcribeStartedAt))s chars=\(transcript.count)"
                     )
-                    self.recordUsage(
-                        operation: .transcription,
-                        requestedModel: transcriptionModel,
-                        result: transcribeResult
-                    )
-                    transcript = transcribeResult.text
                 } catch OpenRouterClientError.emptyTranscription {
-                    try? FileManager.default.removeItem(at: audioURL)
+                    DictationLogger.shared.log("session", "empty whisper transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
+                    await self.handleNoSpeech(sessionID: sessionID)
+                    return
+                } catch DeepgramStreamingError.emptyTranscript {
+                    DictationLogger.shared.log("session", "empty deepgram transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
                     await self.handleNoSpeech(sessionID: sessionID)
                     return
                 }
 
                 let cleaned = TextPostProcessor.process(
                     transcript,
-                    language: language,
-                    cleanFillers: cleanFillers
+                    language: language
                 )
 
                 guard TextPostProcessor.hasMeaningfulContent(cleaned) else {
-                    try? FileManager.default.removeItem(at: audioURL)
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech-after-cleanup elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
                     await self.handleNoSpeech(sessionID: sessionID)
                     return
                 }
@@ -426,6 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if polishWithGPT {
                     await self.showPolishingPhase(sessionID: sessionID)
                     try Task.checkCancellation()
+
+                    guard let apiKey = openRouterKey else {
+                        throw OpenRouterClientError.invalidResponse
+                    }
+
+                    let polishStartedAt = Date()
                     do {
                         let polishResult = try await self.openRouter.formalize(
                             text: cleaned,
@@ -436,12 +578,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                         self.recordUsage(
                             operation: .polish,
+                            provider: .openrouter,
                             requestedModel: polishModel,
+                            elapsedSeconds: Date().timeIntervalSince(polishStartedAt),
                             result: polishResult
                         )
                         finalText = polishResult.text
+                        DictationLogger.shared.logText("polished", finalText)
+                        DictationLogger.shared.log(
+                            "timing",
+                            "polish sessionID=\(sessionID) elapsed=\(Self.formatElapsed(polishStartedAt))s chars=\(finalText.count)"
+                        )
                     } catch OpenRouterClientError.emptyFormalization {
-                        try? FileManager.default.removeItem(at: audioURL)
+                        DictationLogger.shared.log("session", "empty polish sessionID=\(sessionID) elapsed=\(Self.formatElapsed(polishStartedAt))s")
+                        cleanupAudio()
+                        DictationLogger.shared.log(
+                            "timing",
+                            "session-total sessionID=\(sessionID) outcome=empty-polish elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                        )
                         await self.handleNoSpeech(sessionID: sessionID)
                         return
                     }
@@ -450,18 +604,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 guard TextPostProcessor.hasMeaningfulContent(finalText) else {
-                    try? FileManager.default.removeItem(at: audioURL)
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-meaningful-final elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
                     await self.handleNoSpeech(sessionID: sessionID)
                     return
                 }
 
-                try? FileManager.default.removeItem(at: audioURL)
+                cleanupAudio()
+                DictationLogger.shared.log(
+                    "timing",
+                    "session-total sessionID=\(sessionID) outcome=ok elapsed=\(Self.formatElapsed(processingStartedAt))s recordedSeconds=\(String(format: "%.2f", artifacts.durationSeconds))"
+                )
                 await self.completeProcessing(with: finalText, sessionID: sessionID)
             } catch is CancellationError {
-                try? FileManager.default.removeItem(at: audioURL)
+                activeStreamingTask?.cancel()
+                cleanupAudio()
+                DictationLogger.shared.log(
+                    "timing",
+                    "session-total sessionID=\(sessionID) outcome=canceled elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                )
                 await self.handleProcessingCanceled(sessionID: sessionID)
             } catch {
-                try? FileManager.default.removeItem(at: audioURL)
+                activeStreamingTask?.cancel()
+                cleanupAudio()
+                DictationLogger.shared.log(
+                    "timing",
+                    "session-total sessionID=\(sessionID) outcome=error elapsed=\(Self.formatElapsed(processingStartedAt))s message=\(error.localizedDescription)"
+                )
                 await self.completeProcessing(with: error, sessionID: sessionID)
             }
         }
@@ -557,16 +729,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
         updateStatusTitle("Error")
         floatingStatusWindowController.showError(error.localizedDescription)
-        showAlert(title: "OpenRouter request failed", message: error.localizedDescription)
+        showAlert(title: "Transcription failed", message: error.localizedDescription)
     }
 
     private func ensureAPIKeyIsAvailable() -> Bool {
-        if settings.apiKey != nil {
+        let provider = settings.transcriptionProvider
+        let hasTranscriberKey: Bool
+        let missingMessage: String
+        switch provider {
+        case .deepgram:
+            hasTranscriberKey = settings.deepgramAPIKey != nil
+            missingMessage = "Add Deepgram API key"
+        case .openRouterWhisper:
+            hasTranscriberKey = settings.apiKey != nil
+            missingMessage = "Add OpenRouter API key"
+        }
+
+        // GPT polish always runs on OpenRouter, so the OpenRouter key is required
+        // whenever polish is enabled, regardless of the transcription provider.
+        let needsOpenRouterKey = settings.polishWithGPT || provider == .openRouterWhisper
+        let hasOpenRouterKey = settings.apiKey != nil
+
+        if hasTranscriberKey, !needsOpenRouterKey || hasOpenRouterKey {
             return true
         }
 
+        if !hasTranscriberKey {
+            openSettings()
+            floatingStatusWindowController.showError(missingMessage)
+            flashStatus("Add API Key")
+            return false
+        }
+
         openSettings()
-        floatingStatusWindowController.showError("Add OpenRouter API key")
+        floatingStatusWindowController.showError("Add OpenRouter API key for polish")
         flashStatus("Add API Key")
         return false
     }
@@ -646,15 +842,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func recordUsage(
         operation: UsageOperation,
+        provider: UsageProvider,
         requestedModel: String,
+        elapsedSeconds: Double,
         result: OpenRouterTextResult
     ) {
         let record = UsageRecord(
             operation: operation,
+            provider: provider,
             model: requestedModel,
             resolvedModel: result.model,
+            elapsedSeconds: elapsedSeconds,
             usage: result.usage
         )
         usageStore.append(record)
+    }
+
+    private func recordUsage(
+        operation: UsageOperation,
+        provider: UsageProvider,
+        requestedModel: String,
+        resolvedModel: String,
+        audioSeconds: Double,
+        elapsedSeconds: Double,
+        cost: Double
+    ) {
+        let record = UsageRecord(
+            operation: operation,
+            provider: provider,
+            model: requestedModel,
+            resolvedModel: resolvedModel,
+            audioSeconds: audioSeconds,
+            elapsedSeconds: elapsedSeconds,
+            cost: cost
+        )
+        usageStore.append(record)
+    }
+
+    fileprivate static func formatElapsed(_ startedAt: Date) -> String {
+        String(format: "%.2f", Date().timeIntervalSince(startedAt))
     }
 }

@@ -5,8 +5,8 @@ another-typelessi is a macOS menu bar dictation app inspired by Typeless.
 Press `Fn` to start recording, press it again to stop, and the app will:
 
 1. Record local audio from the microphone.
-2. Send the WAV audio to OpenRouter `openai/whisper-large-v3-turbo` for transcription.
-3. Send the transcript to OpenRouter `openai/gpt-5.4-mini` for cleanup and formalization.
+2. Transcribe the audio. By default it streams to Deepgram (Nova-3) while you speak, so the transcript is ready almost as soon as you release `Fn`. You can switch to OpenRouter Whisper from Settings to upload the full WAV after recording instead.
+3. Send the transcript to OpenRouter (`openai/gpt-5.4-mini` by default) for cleanup and formalization.
 4. Paste the final text into the current cursor position, or copy it to the clipboard.
 
 During recording and processing, a compact floating status indicator appears near the bottom center of the screen. It shows recording, transcribing, polishing, success, and error states.
@@ -29,14 +29,13 @@ Open the menu bar item and choose:
 
 From the settings window you can configure:
 
-- OpenRouter API key
-- Base URL, defaulting to `https://openrouter.ai/api/v1`
-- Transcription model, defaulting to `openai/whisper-large-v3-turbo`
-- Formalization model, defaulting to `openai/gpt-5.4-mini`
+- Transcription provider: `Deepgram (streaming)` or `OpenRouter Whisper (batch)`
+- Deepgram API key and model (defaults to `nova-3`)
+- OpenRouter API key, base URL, and formalization model (used for GPT polish, plus the optional Whisper batch path)
 - Output mode, transcription language, and clipboard behavior
-- Weekly usage analysis split by stage/model, with call counts, token counts, audio tokens, and cost
+- Weekly usage analysis split by stage/provider/model, with call counts, token counts, audio duration, and cost
 
-Use `Auto Detect` for transcription language if you switch between Chinese and English. In auto mode the app does not force Whisper to a specific language, and GPT polishing is instructed to never translate the transcript.
+Use `Auto Detect` for transcription language if you switch between Chinese and English. With Deepgram the app uses the `multi` language model, and with Whisper it omits the language hint. GPT polish is instructed to never translate the transcript.
 
 Usage data is stored locally in `~/Library/Application Support/another-typelessi/usage.json`.
 
@@ -73,13 +72,12 @@ The build script installs the app to `/Applications/another-typelessi.app`. Open
 - `Output -> Paste at Cursor`
 - `Output -> Copy to Clipboard`
 - `Transcription Language`
-- `Clean filler words locally`
 - `Formalize with GPT-5.4 Mini`
 - `Restore clipboard after paste`
 
 ## Notes
 
-This app does not use Siri or Apple Speech recognition. Audio recognition and text formalization are both performed through OpenRouter using the configured API key.
+This app does not use Siri or Apple Speech recognition. Speech recognition runs through Deepgram or OpenRouter Whisper depending on the configured provider; text formalization runs through OpenRouter using the OpenRouter API key.
 
 ## License
 

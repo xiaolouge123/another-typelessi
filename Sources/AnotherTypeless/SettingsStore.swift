@@ -70,6 +70,46 @@ enum RecognitionLanguage: String, CaseIterable, Codable {
             return rawValue
         }
     }
+
+    var deepgramLanguageCode: String {
+        switch self {
+        case .auto:
+            return "multi"
+        case .zhCN:
+            return "zh"
+        case .enUS:
+            return "en-US"
+        case .jaJP:
+            return "ja"
+        case .koKR:
+            return "ko"
+        case .esES:
+            return "es"
+        }
+    }
+}
+
+enum TranscriptionProvider: String, CaseIterable, Codable {
+    case deepgram
+    case openRouterWhisper
+
+    var title: String {
+        switch self {
+        case .deepgram:
+            return "Deepgram (streaming)"
+        case .openRouterWhisper:
+            return "OpenRouter Whisper (batch)"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .deepgram:
+            return "Streams microphone audio to Deepgram while you speak. The transcript is ready almost as soon as you release Fn."
+        case .openRouterWhisper:
+            return "Records the full clip locally, then uploads it to OpenRouter Whisper after you release Fn."
+        }
+    }
 }
 
 final class SettingsStore {
@@ -106,16 +146,6 @@ final class SettingsStore {
         }
         set {
             configuration.language = newValue
-            persistIgnoringErrors()
-        }
-    }
-
-    var cleanFillers: Bool {
-        get {
-            configuration.cleanFillers
-        }
-        set {
-            configuration.cleanFillers = newValue
             persistIgnoringErrors()
         }
     }
@@ -160,6 +190,30 @@ final class SettingsStore {
         }
     }
 
+    var transcriptionProvider: TranscriptionProvider {
+        get {
+            configuration.transcriptionProvider
+        }
+        set {
+            configuration.transcriptionProvider = newValue
+            persistIgnoringErrors()
+        }
+    }
+
+    var deepgramAPIKey: String? {
+        configuration.deepgramAPIKey.nilIfBlank
+    }
+
+    var deepgramModel: String {
+        get {
+            configuration.deepgramModel.nilIfBlank ?? Self.defaultDeepgramModel
+        }
+        set {
+            configuration.deepgramModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
     var baseURLString: String {
         get {
             configuration.baseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultBaseURLString
@@ -200,26 +254,33 @@ final class SettingsStore {
         polishModel: String,
         outputMode: OutputMode,
         language: RecognitionLanguage,
-        cleanFillers: Bool,
         polishWithGPT: Bool,
         restoreClipboard: Bool,
         duckingLevel: Double,
         preferredMicrophone: MicrophonePreference,
-        apiKey: String?
+        transcriptionProvider: TranscriptionProvider,
+        deepgramModel: String,
+        apiKey: String?,
+        deepgramAPIKey: String?
     ) throws {
         configuration.baseURL = Self.normalizeBaseURLString(baseURLString)
         configuration.transcriptionModel = transcriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
         configuration.polishModel = polishModel.trimmingCharacters(in: .whitespacesAndNewlines)
         configuration.outputMode = outputMode
         configuration.language = language
-        configuration.cleanFillers = cleanFillers
         configuration.polishWithGPT = polishWithGPT
         configuration.restoreClipboard = restoreClipboard
         configuration.duckingLevel = Self.clampDuckingLevel(duckingLevel)
         configuration.preferredMicrophone = preferredMicrophone
+        configuration.transcriptionProvider = transcriptionProvider
+        configuration.deepgramModel = deepgramModel.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let apiKey {
             configuration.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let deepgramAPIKey {
+            configuration.deepgramAPIKey = deepgramAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         try persist()
@@ -230,12 +291,19 @@ final class SettingsStore {
         try persist()
     }
 
+    func clearDeepgramAPIKey() throws {
+        configuration.deepgramAPIKey = ""
+        try persist()
+    }
+
     static let defaultBaseURLString = "https://openrouter.ai/api/v1"
     static let defaultTranscriptionModel = "openai/whisper-large-v3-turbo"
     static let defaultPolishModel = "openai/gpt-5.4-mini"
     static let defaultLanguage = RecognitionLanguage.auto
     static let defaultDuckingLevel: Double = 0.1
     static let defaultMicrophonePreference: MicrophonePreference = .systemDefault
+    static let defaultTranscriptionProvider: TranscriptionProvider = .deepgram
+    static let defaultDeepgramModel = "nova-3"
 
     fileprivate static func clampDuckingLevel(_ value: Double) -> Double {
         max(0, min(1, value))
@@ -342,11 +410,13 @@ private struct Configuration: Codable {
     var polishModel: String
     var outputMode: OutputMode
     var language: RecognitionLanguage
-    var cleanFillers: Bool
     var polishWithGPT: Bool
     var restoreClipboard: Bool
     var duckingLevel: Double
     var preferredMicrophone: MicrophonePreference
+    var transcriptionProvider: TranscriptionProvider
+    var deepgramAPIKey: String
+    var deepgramModel: String
 
     init() {
         self.apiKey = ""
@@ -355,11 +425,13 @@ private struct Configuration: Codable {
         self.polishModel = SettingsStore.defaultPolishModel
         self.outputMode = .pasteAtCursor
         self.language = SettingsStore.defaultLanguage
-        self.cleanFillers = true
         self.polishWithGPT = true
         self.restoreClipboard = true
         self.duckingLevel = SettingsStore.defaultDuckingLevel
         self.preferredMicrophone = SettingsStore.defaultMicrophonePreference
+        self.transcriptionProvider = SettingsStore.defaultTranscriptionProvider
+        self.deepgramAPIKey = ""
+        self.deepgramModel = SettingsStore.defaultDeepgramModel
     }
 
     init(from decoder: Decoder) throws {
@@ -374,13 +446,23 @@ private struct Configuration: Codable {
         self.polishModel = try container.decodeIfPresent(String.self, forKey: .polishModel) ?? SettingsStore.defaultPolishModel
         self.outputMode = OutputMode(rawValue: outputModeRaw) ?? .pasteAtCursor
         self.language = RecognitionLanguage(rawValue: migratedLanguageRaw) ?? SettingsStore.defaultLanguage
-        self.cleanFillers = try container.decodeIfPresent(Bool.self, forKey: .cleanFillers) ?? true
         self.polishWithGPT = try container.decodeIfPresent(Bool.self, forKey: .polishWithGPT) ?? true
         self.restoreClipboard = try container.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? true
         let rawDucking = try container.decodeIfPresent(Double.self, forKey: .duckingLevel) ?? SettingsStore.defaultDuckingLevel
         self.duckingLevel = SettingsStore.clampDuckingLevel(rawDucking)
         let micRaw = try container.decodeIfPresent(String.self, forKey: .preferredMicrophone) ?? ""
         self.preferredMicrophone = MicrophonePreference(rawValue: micRaw) ?? SettingsStore.defaultMicrophonePreference
+
+        let providerRaw = try container.decodeIfPresent(String.self, forKey: .transcriptionProvider) ?? ""
+        if let provider = TranscriptionProvider(rawValue: providerRaw) {
+            self.transcriptionProvider = provider
+        } else {
+            // Existing installs without this field stay on the OpenRouter Whisper path
+            // until the user opts in to Deepgram from Settings.
+            self.transcriptionProvider = .openRouterWhisper
+        }
+        self.deepgramAPIKey = try container.decodeIfPresent(String.self, forKey: .deepgramAPIKey) ?? ""
+        self.deepgramModel = try container.decodeIfPresent(String.self, forKey: .deepgramModel) ?? SettingsStore.defaultDeepgramModel
     }
 }
 

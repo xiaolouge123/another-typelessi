@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
@@ -9,13 +10,17 @@ final class SettingsViewModel: ObservableObject {
     @Published var polishModel: String
     @Published var outputMode: OutputMode
     @Published var language: RecognitionLanguage
-    @Published var cleanFillers: Bool
     @Published var polishWithGPT: Bool
     @Published var restoreClipboard: Bool
     @Published var duckingLevel: Double
     @Published var preferredMicrophone: MicrophonePreference
+    @Published var transcriptionProvider: TranscriptionProvider
+    @Published var deepgramAPIKey: String = ""
+    @Published var hasStoredDeepgramAPIKey: Bool = false
+    @Published var deepgramModel: String
     @Published var configFilePath: String
     @Published var usageFilePath: String
+    @Published var logFilePath: String
     @Published var usageSummaries: [WeeklyModelUsage] = []
     @Published var statusMessage: String = ""
 
@@ -30,14 +35,17 @@ final class SettingsViewModel: ObservableObject {
         self.polishModel = settings.polishModel
         self.outputMode = settings.outputMode
         self.language = settings.language
-        self.cleanFillers = settings.cleanFillers
         self.polishWithGPT = settings.polishWithGPT
         self.restoreClipboard = settings.restoreClipboard
         self.duckingLevel = settings.duckingLevel
         self.preferredMicrophone = settings.preferredMicrophone
+        self.transcriptionProvider = settings.transcriptionProvider
+        self.deepgramModel = settings.deepgramModel
         self.configFilePath = settings.configFileURL.path
         self.usageFilePath = usageStore.usageFileURL.path
+        self.logFilePath = DictationLogger.shared.fileURL.path
         self.hasStoredAPIKey = settings.apiKey != nil
+        self.hasStoredDeepgramAPIKey = settings.deepgramAPIKey != nil
         refreshUsage()
     }
 
@@ -45,6 +53,7 @@ final class SettingsViewModel: ObservableObject {
         do {
             let normalizedBaseURL = try Self.validateBaseURL(baseURL)
             let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedDeepgramAPIKey = deepgramAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
             try settings.update(
                 baseURLString: normalizedBaseURL.absoluteString,
@@ -52,12 +61,14 @@ final class SettingsViewModel: ObservableObject {
                 polishModel: polishModel,
                 outputMode: outputMode,
                 language: language,
-                cleanFillers: cleanFillers,
                 polishWithGPT: polishWithGPT,
                 restoreClipboard: restoreClipboard,
                 duckingLevel: duckingLevel,
                 preferredMicrophone: preferredMicrophone,
-                apiKey: trimmedAPIKey.isEmpty ? nil : trimmedAPIKey
+                transcriptionProvider: transcriptionProvider,
+                deepgramModel: deepgramModel,
+                apiKey: trimmedAPIKey.isEmpty ? nil : trimmedAPIKey,
+                deepgramAPIKey: trimmedDeepgramAPIKey.isEmpty ? nil : trimmedDeepgramAPIKey
             )
 
             duckingLevel = settings.duckingLevel
@@ -65,8 +76,12 @@ final class SettingsViewModel: ObservableObject {
             if !trimmedAPIKey.isEmpty {
                 apiKey = ""
             }
+            if !trimmedDeepgramAPIKey.isEmpty {
+                deepgramAPIKey = ""
+            }
 
             hasStoredAPIKey = settings.apiKey != nil
+            hasStoredDeepgramAPIKey = settings.deepgramAPIKey != nil
             statusMessage = "Saved to local config"
         } catch {
             statusMessage = error.localizedDescription
@@ -78,7 +93,18 @@ final class SettingsViewModel: ObservableObject {
             try settings.clearAPIKey()
             apiKey = ""
             hasStoredAPIKey = false
-            statusMessage = "API key cleared"
+            statusMessage = "OpenRouter API key cleared"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func clearDeepgramAPIKey() {
+        do {
+            try settings.clearDeepgramAPIKey()
+            deepgramAPIKey = ""
+            hasStoredDeepgramAPIKey = false
+            statusMessage = "Deepgram API key cleared"
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -90,11 +116,12 @@ final class SettingsViewModel: ObservableObject {
         polishModel = SettingsStore.defaultPolishModel
         outputMode = .pasteAtCursor
         language = SettingsStore.defaultLanguage
-        cleanFillers = true
         polishWithGPT = true
         restoreClipboard = true
         duckingLevel = SettingsStore.defaultDuckingLevel
         preferredMicrophone = SettingsStore.defaultMicrophonePreference
+        transcriptionProvider = SettingsStore.defaultTranscriptionProvider
+        deepgramModel = SettingsStore.defaultDeepgramModel
         statusMessage = "Defaults loaded; click Save"
     }
 
@@ -110,6 +137,24 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func clearDictationLog() {
+        let url = DictationLogger.shared.fileURL
+        do {
+            try Data().write(to: url, options: [.atomic])
+            LocalFileSecurity.protectFile(url)
+            statusMessage = "Dictation log cleared"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func revealDictationLog() {
+        NSWorkspace.shared.selectFile(
+            DictationLogger.shared.fileURL.path,
+            inFileViewerRootedAtPath: DictationLogger.shared.fileURL.deletingLastPathComponent().path
+        )
     }
 
     private static func validateBaseURL(_ rawValue: String) throws -> URL {
