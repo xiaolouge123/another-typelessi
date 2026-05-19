@@ -4,14 +4,20 @@ import Carbon.HIToolbox
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsStore()
     private let usageStore = UsageStore()
+    private let correctionStore = CorrectionStore()
     private let audioRecorder = AudioRecorder()
     private let outputDuckingCoordinator = SystemOutputDuckingCoordinator()
     private let openRouter = OpenRouterClient()
     private let deepgram = DeepgramStreamingClient()
+    private let elevenLabs = ElevenLabsClient()
+    private let elevenLabsStreaming = ElevenLabsStreamingClient()
+    private let doubao = DoubaoStreamingClient()
     private let injector = TextInjector()
+    private lazy var textChangeMonitor = TextChangeMonitor(correctionStore: correctionStore)
     private lazy var preferencesWindowController = PreferencesWindowController(
         settings: settings,
-        usageStore: usageStore
+        usageStore: usageStore,
+        correctionStore: correctionStore
     )
     private lazy var floatingStatusWindowController = FloatingStatusWindowController()
     private let cancelHotKeyCenter = HotKeyCenter(keyCode: UInt32(kVK_Escape), modifiers: 0)
@@ -19,10 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKeyCenter: FunctionHotKeyCenter?
     private var processingTask: Task<Void, Never>?
-    private var streamingTask: Task<DeepgramTranscriptResult, Error>?
+    private var streamingTask: Task<StreamingTranscriptResult, Error>?
     private var streamingAPIKey: String?
     private var streamingModel: String?
-    private var streamingLanguage: RecognitionLanguage = .auto
+    private var streamingLanguage: String = "multi"
     private var isRecording = false
     private var isArming = false
     private var isProcessing = false
@@ -309,9 +315,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let provider = settings.transcriptionProvider
         let recordingMode: RecordingMode
         switch provider {
-        case .deepgram:
+        case .deepgram, .elevenLabsRealtime, .doubao:
             recordingMode = .livePCM
-        case .openRouterWhisper:
+        case .openRouterWhisper, .elevenLabs:
             recordingMode = .fileBackup
         }
 
@@ -324,6 +330,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             if provider == .deepgram {
                 try startDeepgramStreaming(sessionID: sessionID)
+            } else if provider == .elevenLabsRealtime {
+                try startElevenLabsRealtimeStreaming(sessionID: sessionID)
+            } else if provider == .doubao {
+                try startDoubaoStreaming(sessionID: sessionID)
             }
 
             isArming = false
@@ -356,7 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let model = settings.deepgramModel
-        let language = settings.language
+        let baseURL = settings.deepgramBaseURL
+        let language = settings.deepgramLanguage
         streamingAPIKey = apiKey
         streamingModel = model
         streamingLanguage = language
@@ -365,7 +376,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try await deepgram.runSession(
                 pcm: pcmStream,
                 apiKey: apiKey,
+                baseURL: baseURL,
                 model: model,
+                language: language
+            )
+        }
+    }
+
+    private func startElevenLabsRealtimeStreaming(sessionID: Int) throws {
+        guard let pcmStream = audioRecorder.pcmStream else {
+            throw AudioRecorderError.microphoneUnavailable
+        }
+        guard let apiKey = settings.elevenLabsRealtimeAPIKey else {
+            throw ElevenLabsStreamingError.authenticationFailed("ElevenLabs Realtime API key not configured")
+        }
+
+        let model = settings.elevenLabsRealtimeModel
+        let baseURL = settings.elevenLabsRealtimeBaseURL
+        let language = settings.elevenLabsRealtimeLanguage
+        streamingAPIKey = apiKey
+        streamingModel = model
+        streamingLanguage = language
+
+        streamingTask = Task { [elevenLabsStreaming] in
+            try await elevenLabsStreaming.runSession(
+                pcm: pcmStream,
+                apiKey: apiKey,
+                baseURL: baseURL,
+                model: model,
+                language: language
+            )
+        }
+    }
+
+    private func startDoubaoStreaming(sessionID: Int) throws {
+        guard let pcmStream = audioRecorder.pcmStream else {
+            throw AudioRecorderError.microphoneUnavailable
+        }
+        guard let apiKey = settings.doubaoAPIKey else {
+            throw DoubaoStreamingError.authenticationFailed("Doubao API key not configured")
+        }
+
+        let baseURL = settings.doubaoBaseURL
+        let resourceId = settings.doubaoResourceId
+        let language = settings.doubaoLanguage
+        streamingAPIKey = apiKey
+        streamingModel = "bigmodel"
+        streamingLanguage = language
+
+        streamingTask = Task { [doubao] in
+            try await doubao.runSession(
+                pcm: pcmStream,
+                apiKey: apiKey,
+                baseURL: baseURL,
+                resourceId: resourceId,
                 language: language
             )
         }
@@ -415,11 +479,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let provider = settings.transcriptionProvider
         let language = settings.language
         let polishWithGPT = settings.polishWithGPT
-        let baseURL = settings.baseURL
-        let transcriptionModel = settings.transcriptionModel
-        let polishModel = settings.polishModel
+
+        let whisperLanguage = settings.whisperLanguage
+        let whisperBaseURL = settings.whisperBaseURL
+        let whisperModel = settings.whisperModel
+        let whisperKey = settings.whisperAPIKey
+
+        let elevenLabsLanguage = settings.elevenLabsLanguage
+        let elevenLabsBaseURL = settings.elevenLabsBaseURL
+        let elevenLabsModel = settings.elevenLabsModel
+        let elevenLabsKey = settings.elevenLabsAPIKey
+
+        let elevenLabsRealtimeModel = settings.elevenLabsRealtimeModel
+        let elevenLabsRealtimeKey = settings.elevenLabsRealtimeAPIKey
+
         let deepgramModel = settings.deepgramModel
-        let openRouterKey = settings.apiKey
+
+        let polishBaseURL = settings.polishBaseURL
+        let polishModel = settings.polishModel
+        let polishKey = settings.polishAPIKey
+
         let processingStartedAt = Date()
 
         DictationLogger.shared.log(
@@ -427,11 +506,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "begin sessionID=\(sessionID) provider=\(provider.rawValue) language=\(language.rawValue) polish=\(polishWithGPT) recordedSeconds=\(String(format: "%.2f", artifacts.durationSeconds))"
         )
 
-        if provider == .openRouterWhisper, openRouterKey == nil {
+        if provider == .openRouterWhisper, whisperKey == nil {
             isProcessing = false
             rebuildMenu()
             updateStatusTitle("No API Key")
-            floatingStatusWindowController.showError("Add OpenRouter API key")
+            floatingStatusWindowController.showError("Add Whisper (OpenRouter) API key")
             openSettings()
             if let url = artifacts.audioURL {
                 try? FileManager.default.removeItem(at: url)
@@ -439,11 +518,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if polishWithGPT, openRouterKey == nil {
+        if provider == .elevenLabs, elevenLabsKey == nil {
             isProcessing = false
             rebuildMenu()
             updateStatusTitle("No API Key")
-            floatingStatusWindowController.showError("Add OpenRouter API key for polish")
+            floatingStatusWindowController.showError("Add ElevenLabs API key")
+            openSettings()
+            if let url = artifacts.audioURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+
+        if provider == .elevenLabsRealtime, elevenLabsRealtimeKey == nil {
+            isProcessing = false
+            rebuildMenu()
+            updateStatusTitle("No API Key")
+            floatingStatusWindowController.showError("Add ElevenLabs Realtime API key")
+            openSettings()
+            if let url = artifacts.audioURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+
+        if provider == .doubao, settings.doubaoAPIKey == nil {
+            isProcessing = false
+            rebuildMenu()
+            updateStatusTitle("No API Key")
+            floatingStatusWindowController.showError("Add Doubao API key")
+            openSettings()
+            if let url = artifacts.audioURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            return
+        }
+
+        if polishWithGPT, polishKey == nil {
+            isProcessing = false
+            rebuildMenu()
+            updateStatusTitle("No API Key")
+            floatingStatusWindowController.showError("Add Polish API key")
             openSettings()
             if let url = artifacts.audioURL {
                 try? FileManager.default.removeItem(at: url)
@@ -479,7 +594,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let transcribeStartedAt = Date()
                 do {
                     switch provider {
-                    case .deepgram:
+                    case .deepgram, .elevenLabsRealtime, .doubao:
                         guard let streaming = activeStreamingTask else {
                             throw DeepgramStreamingError.connectionFailed("Streaming task missing")
                         }
@@ -488,10 +603,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } onCancel: {
                             streaming.cancel()
                         }
+                        let requestedModel: String
+                        switch provider {
+                        case .deepgram: requestedModel = deepgramModel
+                        case .elevenLabsRealtime: requestedModel = elevenLabsRealtimeModel
+                        case .doubao: requestedModel = "bigmodel"
+                        default: requestedModel = result.model
+                        }
                         self.recordUsage(
                             operation: .transcription,
-                            provider: .deepgram,
-                            requestedModel: deepgramModel,
+                            provider: result.provider,
+                            requestedModel: requestedModel,
                             resolvedModel: result.model,
                             audioSeconds: result.audioSeconds,
                             elapsedSeconds: Date().timeIntervalSince(transcribeStartedAt),
@@ -499,25 +621,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                         transcript = result.text
                     case .openRouterWhisper:
-                        guard let audioURL = artifacts.audioURL, let apiKey = openRouterKey else {
+                        guard let audioURL = artifacts.audioURL, let apiKey = whisperKey else {
                             throw OpenRouterClientError.invalidResponse
                         }
                         let transcribeResult = try await self.openRouter.transcribe(
                             audioURL: audioURL,
-                            language: language,
-                            baseURL: baseURL,
-                            transcriptionModel: transcriptionModel,
+                            language: whisperLanguage,
+                            baseURL: whisperBaseURL,
+                            transcriptionModel: whisperModel,
                             apiKey: apiKey
                         )
                         self.recordUsage(
                             operation: .transcription,
                             provider: .openrouter,
-                            requestedModel: transcriptionModel,
+                            requestedModel: whisperModel,
                             elapsedSeconds: Date().timeIntervalSince(transcribeStartedAt),
                             result: transcribeResult
                         )
                         transcript = transcribeResult.text
                         DictationLogger.shared.logText("whisper.transcript", transcript)
+                    case .elevenLabs:
+                        guard let audioURL = artifacts.audioURL, let apiKey = elevenLabsKey else {
+                            throw ElevenLabsClientError.invalidResponse
+                        }
+                        let elResult = try await self.elevenLabs.transcribe(
+                            audioURL: audioURL,
+                            baseURL: elevenLabsBaseURL,
+                            model: elevenLabsModel,
+                            language: elevenLabsLanguage,
+                            apiKey: apiKey
+                        )
+                        self.recordUsage(
+                            operation: .transcription,
+                            provider: .elevenLabs,
+                            requestedModel: elevenLabsModel,
+                            resolvedModel: elResult.model,
+                            audioSeconds: artifacts.durationSeconds,
+                            elapsedSeconds: Date().timeIntervalSince(transcribeStartedAt),
+                            cost: ElevenLabsClient.estimatedCost(audioSeconds: artifacts.durationSeconds)
+                        )
+                        transcript = elResult.text
                     }
                     DictationLogger.shared.log(
                         "timing",
@@ -532,8 +675,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     await self.handleNoSpeech(sessionID: sessionID)
                     return
+                } catch ElevenLabsClientError.emptyTranscription {
+                    DictationLogger.shared.log("session", "empty elevenlabs transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
+                    await self.handleNoSpeech(sessionID: sessionID)
+                    return
                 } catch DeepgramStreamingError.emptyTranscript {
                     DictationLogger.shared.log("session", "empty deepgram transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
+                    await self.handleNoSpeech(sessionID: sessionID)
+                    return
+                } catch ElevenLabsStreamingError.emptyTranscript {
+                    DictationLogger.shared.log("session", "empty elevenlabs realtime transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
+                    cleanupAudio()
+                    DictationLogger.shared.log(
+                        "timing",
+                        "session-total sessionID=\(sessionID) outcome=no-speech elapsed=\(Self.formatElapsed(processingStartedAt))s"
+                    )
+                    await self.handleNoSpeech(sessionID: sessionID)
+                    return
+                } catch DoubaoStreamingError.emptyTranscript {
+                    DictationLogger.shared.log("session", "empty doubao transcript sessionID=\(sessionID) elapsed=\(Self.formatElapsed(transcribeStartedAt))s")
                     cleanupAudio()
                     DictationLogger.shared.log(
                         "timing",
@@ -563,18 +733,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await self.showPolishingPhase(sessionID: sessionID)
                     try Task.checkCancellation()
 
-                    guard let apiKey = openRouterKey else {
+                    guard let apiKey = polishKey else {
                         throw OpenRouterClientError.invalidResponse
                     }
 
                     let polishStartedAt = Date()
                     do {
+                        let correctionContext = self.correctionStore.getRecentRecords(count: 20)
                         let polishResult = try await self.openRouter.formalize(
                             text: cleaned,
                             language: language,
-                            baseURL: baseURL,
+                            baseURL: polishBaseURL,
                             polishModel: polishModel,
-                            apiKey: apiKey
+                            apiKey: apiKey,
+                            correctionContext: correctionContext
                         )
                         self.recordUsage(
                             operation: .polish,
@@ -703,6 +875,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restoreClipboard: settings.restoreClipboard
         )
 
+        // Start monitoring for user corrections
+        textChangeMonitor.startMonitoring(
+            outputText: finalText,
+            sessionID: sessionID,
+            duration: 30.0,
+            pollInterval: 5.0
+        )
+
         switch result {
         case .pasted:
             updateStatusTitle("Pasted")
@@ -741,16 +921,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hasTranscriberKey = settings.deepgramAPIKey != nil
             missingMessage = "Add Deepgram API key"
         case .openRouterWhisper:
-            hasTranscriberKey = settings.apiKey != nil
-            missingMessage = "Add OpenRouter API key"
+            hasTranscriberKey = settings.whisperAPIKey != nil
+            missingMessage = "Add Whisper (OpenRouter) API key"
+        case .elevenLabs:
+            hasTranscriberKey = settings.elevenLabsAPIKey != nil
+            missingMessage = "Add ElevenLabs API key"
+        case .elevenLabsRealtime:
+            hasTranscriberKey = settings.elevenLabsRealtimeAPIKey != nil
+            missingMessage = "Add ElevenLabs Realtime API key"
+        case .doubao:
+            hasTranscriberKey = settings.doubaoAPIKey != nil
+            missingMessage = "Add Doubao API key"
         }
 
-        // GPT polish always runs on OpenRouter, so the OpenRouter key is required
-        // whenever polish is enabled, regardless of the transcription provider.
-        let needsOpenRouterKey = settings.polishWithGPT || provider == .openRouterWhisper
-        let hasOpenRouterKey = settings.apiKey != nil
+        let needsPolishKey = settings.polishWithGPT
+        let hasPolishKey = settings.polishAPIKey != nil
 
-        if hasTranscriberKey, !needsOpenRouterKey || hasOpenRouterKey {
+        if hasTranscriberKey, !needsPolishKey || hasPolishKey {
             return true
         }
 
@@ -762,7 +949,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         openSettings()
-        floatingStatusWindowController.showError("Add OpenRouter API key for polish")
+        floatingStatusWindowController.showError("Add Polish API key")
         flashStatus("Add API Key")
         return false
     }

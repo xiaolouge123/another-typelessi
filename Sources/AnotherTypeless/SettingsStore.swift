@@ -89,16 +89,46 @@ enum RecognitionLanguage: String, CaseIterable, Codable {
     }
 }
 
+enum TranscriptionMode: String, Codable {
+    case streaming
+    case batch
+
+    var badge: String {
+        switch self {
+        case .streaming: return "STREAMING"
+        case .batch: return "BATCH"
+        }
+    }
+}
+
 enum TranscriptionProvider: String, CaseIterable, Codable {
     case deepgram
     case openRouterWhisper
+    case elevenLabs
+    case elevenLabsRealtime
+    case doubao
 
     var title: String {
         switch self {
         case .deepgram:
-            return "Deepgram (streaming)"
+            return "Deepgram"
         case .openRouterWhisper:
-            return "OpenRouter Whisper (batch)"
+            return "OpenRouter Whisper"
+        case .elevenLabs:
+            return "ElevenLabs Scribe"
+        case .elevenLabsRealtime:
+            return "ElevenLabs Scribe Realtime"
+        case .doubao:
+            return "Doubao Realtime"
+        }
+    }
+
+    var mode: TranscriptionMode {
+        switch self {
+        case .deepgram, .elevenLabsRealtime, .doubao:
+            return .streaming
+        case .openRouterWhisper, .elevenLabs:
+            return .batch
         }
     }
 
@@ -108,6 +138,12 @@ enum TranscriptionProvider: String, CaseIterable, Codable {
             return "Streams microphone audio to Deepgram while you speak. The transcript is ready almost as soon as you release Fn."
         case .openRouterWhisper:
             return "Records the full clip locally, then uploads it to OpenRouter Whisper after you release Fn."
+        case .elevenLabs:
+            return "Records the full clip locally, then uploads it to ElevenLabs Scribe (multipart upload) after you release Fn."
+        case .elevenLabsRealtime:
+            return "Streams microphone audio to ElevenLabs Scribe v2 Realtime while you speak (WebSocket, ~150ms latency)."
+        case .doubao:
+            return "Streams microphone audio to Doubao (Volcengine SAUC bigmodel_async) over WebSocket. New-console X-Api-Key authentication."
         }
     }
 }
@@ -127,7 +163,7 @@ final class SettingsStore {
     }
 
     var apiKey: String? {
-        configuration.apiKey.nilIfBlank
+        configuration.polishAPIKey.nilIfBlank ?? configuration.apiKey.nilIfBlank
     }
 
     var outputMode: OutputMode {
@@ -204,6 +240,16 @@ final class SettingsStore {
         configuration.deepgramAPIKey.nilIfBlank
     }
 
+    var deepgramBaseURL: String {
+        get {
+            configuration.deepgramBaseURL.nilIfBlank ?? Self.defaultDeepgramBaseURL
+        }
+        set {
+            configuration.deepgramBaseURL = Self.normalizeBaseURLString(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
     var deepgramModel: String {
         get {
             configuration.deepgramModel.nilIfBlank ?? Self.defaultDeepgramModel
@@ -214,80 +260,294 @@ final class SettingsStore {
         }
     }
 
-    var baseURLString: String {
+    var deepgramLanguage: String {
         get {
-            configuration.baseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultBaseURLString
+            configuration.deepgramLanguage
         }
         set {
-            configuration.baseURL = Self.normalizeBaseURLString(newValue)
+            configuration.deepgramLanguage = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             persistIgnoringErrors()
         }
     }
 
-    var baseURL: URL {
-        URL(string: baseURLString) ?? URL(string: Self.defaultBaseURLString)!
+    // OpenRouter Whisper
+
+    var whisperAPIKey: String? {
+        configuration.whisperAPIKey.nilIfBlank
     }
 
-    var transcriptionModel: String {
+    var whisperBaseURLString: String {
         get {
-            configuration.transcriptionModel.nilIfBlank ?? Self.defaultTranscriptionModel
+            configuration.whisperBaseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultOpenRouterBaseURL
         }
         set {
-            configuration.transcriptionModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            configuration.whisperBaseURL = Self.normalizeBaseURLString(newValue)
             persistIgnoringErrors()
         }
+    }
+
+    var whisperBaseURL: URL {
+        URL(string: whisperBaseURLString) ?? URL(string: Self.defaultOpenRouterBaseURL)!
+    }
+
+    var whisperModel: String {
+        get {
+            configuration.whisperModel.nilIfBlank ?? Self.defaultWhisperModel
+        }
+        set {
+            configuration.whisperModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    var whisperLanguage: String {
+        get {
+            configuration.whisperLanguage
+        }
+        set {
+            configuration.whisperLanguage = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    // ElevenLabs
+
+    var elevenLabsAPIKey: String? {
+        configuration.elevenLabsAPIKey.nilIfBlank
+    }
+
+    var elevenLabsBaseURLString: String {
+        get {
+            configuration.elevenLabsBaseURL.nilIfBlank.map(Self.normalizeBaseURLString) ?? Self.defaultElevenLabsBaseURL
+        }
+        set {
+            configuration.elevenLabsBaseURL = Self.normalizeBaseURLString(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
+    var elevenLabsBaseURL: URL {
+        URL(string: elevenLabsBaseURLString) ?? URL(string: Self.defaultElevenLabsBaseURL)!
+    }
+
+    var elevenLabsModel: String {
+        get {
+            configuration.elevenLabsModel.nilIfBlank ?? Self.defaultElevenLabsModel
+        }
+        set {
+            configuration.elevenLabsModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    var elevenLabsLanguage: String {
+        get {
+            configuration.elevenLabsLanguage
+        }
+        set {
+            configuration.elevenLabsLanguage = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    // ElevenLabs Realtime
+
+    var elevenLabsRealtimeAPIKey: String? {
+        configuration.elevenLabsRealtimeAPIKey.nilIfBlank
+    }
+
+    var elevenLabsRealtimeBaseURL: String {
+        get {
+            configuration.elevenLabsRealtimeBaseURL.nilIfBlank ?? Self.defaultElevenLabsRealtimeBaseURL
+        }
+        set {
+            configuration.elevenLabsRealtimeBaseURL = Self.normalizeBaseURLString(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
+    var elevenLabsRealtimeModel: String {
+        get {
+            configuration.elevenLabsRealtimeModel.nilIfBlank ?? Self.defaultElevenLabsRealtimeModel
+        }
+        set {
+            configuration.elevenLabsRealtimeModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    var elevenLabsRealtimeLanguage: String {
+        get {
+            configuration.elevenLabsRealtimeLanguage
+        }
+        set {
+            configuration.elevenLabsRealtimeLanguage = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    // Doubao (Volcengine SAUC, streaming, wss://)
+
+    var doubaoAPIKey: String? {
+        configuration.doubaoAPIKey.nilIfBlank
+    }
+
+    var doubaoBaseURL: String {
+        get {
+            configuration.doubaoBaseURL.nilIfBlank ?? Self.defaultDoubaoBaseURL
+        }
+        set {
+            configuration.doubaoBaseURL = Self.normalizeBaseURLString(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
+    var doubaoResourceId: String {
+        get {
+            configuration.doubaoResourceId.nilIfBlank ?? Self.defaultDoubaoResourceId
+        }
+        set {
+            configuration.doubaoResourceId = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    var doubaoLanguage: String {
+        get {
+            configuration.doubaoLanguage
+        }
+        set {
+            configuration.doubaoLanguage = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            persistIgnoringErrors()
+        }
+    }
+
+    // Polish
+
+    var polishAPIKey: String? {
+        configuration.polishAPIKey.nilIfBlank ?? configuration.apiKey.nilIfBlank
+    }
+
+    var polishBaseURLString: String {
+        get {
+            (configuration.polishBaseURL.nilIfBlank ?? configuration.baseURL.nilIfBlank)
+                .map(Self.normalizeBaseURLString) ?? Self.defaultOpenRouterBaseURL
+        }
+        set {
+            configuration.polishBaseURL = Self.normalizeBaseURLString(newValue)
+            persistIgnoringErrors()
+        }
+    }
+
+    var polishBaseURL: URL {
+        URL(string: polishBaseURLString) ?? URL(string: Self.defaultOpenRouterBaseURL)!
     }
 
     var polishModel: String {
         get {
-            configuration.polishModel.nilIfBlank ?? Self.defaultPolishModel
+            configuration.polishModelName.nilIfBlank ?? configuration.polishModel.nilIfBlank ?? Self.defaultPolishModel
         }
         set {
-            configuration.polishModel = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            configuration.polishModelName = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             persistIgnoringErrors()
         }
     }
 
-    func update(
-        baseURLString: String,
-        transcriptionModel: String,
-        polishModel: String,
-        outputMode: OutputMode,
-        language: RecognitionLanguage,
-        polishWithGPT: Bool,
-        restoreClipboard: Bool,
-        duckingLevel: Double,
-        preferredMicrophone: MicrophonePreference,
-        transcriptionProvider: TranscriptionProvider,
-        deepgramModel: String,
-        apiKey: String?,
-        deepgramAPIKey: String?
-    ) throws {
-        configuration.baseURL = Self.normalizeBaseURLString(baseURLString)
-        configuration.transcriptionModel = transcriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.polishModel = polishModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.outputMode = outputMode
-        configuration.language = language
-        configuration.polishWithGPT = polishWithGPT
-        configuration.restoreClipboard = restoreClipboard
-        configuration.duckingLevel = Self.clampDuckingLevel(duckingLevel)
-        configuration.preferredMicrophone = preferredMicrophone
-        configuration.transcriptionProvider = transcriptionProvider
-        configuration.deepgramModel = deepgramModel.trimmingCharacters(in: .whitespacesAndNewlines)
+    struct UpdatePayload {
+        var outputMode: OutputMode
+        var language: RecognitionLanguage
+        var polishWithGPT: Bool
+        var restoreClipboard: Bool
+        var duckingLevel: Double
+        var preferredMicrophone: MicrophonePreference
+        var transcriptionProvider: TranscriptionProvider
 
-        if let apiKey {
-            configuration.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Per-provider editable fields (nil API keys mean "leave as stored").
+        var deepgramAPIKey: String?
+        var deepgramBaseURL: String
+        var deepgramModel: String
+        var deepgramLanguage: String
+
+        var whisperAPIKey: String?
+        var whisperBaseURL: String
+        var whisperModel: String
+        var whisperLanguage: String
+
+        var elevenLabsAPIKey: String?
+        var elevenLabsBaseURL: String
+        var elevenLabsModel: String
+        var elevenLabsLanguage: String
+
+        var elevenLabsRealtimeAPIKey: String?
+        var elevenLabsRealtimeBaseURL: String
+        var elevenLabsRealtimeModel: String
+        var elevenLabsRealtimeLanguage: String
+
+        var doubaoAPIKey: String?
+        var doubaoBaseURL: String
+        var doubaoResourceId: String
+        var doubaoLanguage: String
+
+        var polishAPIKey: String?
+        var polishBaseURL: String
+        var polishModel: String
+    }
+
+    func update(_ payload: UpdatePayload) throws {
+        configuration.outputMode = payload.outputMode
+        configuration.language = payload.language
+        configuration.polishWithGPT = payload.polishWithGPT
+        configuration.restoreClipboard = payload.restoreClipboard
+        configuration.duckingLevel = Self.clampDuckingLevel(payload.duckingLevel)
+        configuration.preferredMicrophone = payload.preferredMicrophone
+        configuration.transcriptionProvider = payload.transcriptionProvider
+
+        configuration.deepgramBaseURL = Self.normalizeBaseURLString(payload.deepgramBaseURL)
+        configuration.deepgramModel = payload.deepgramModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.deepgramLanguage = payload.deepgramLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.deepgramAPIKey {
+            configuration.deepgramAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        if let deepgramAPIKey {
-            configuration.deepgramAPIKey = deepgramAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.whisperBaseURL = Self.normalizeBaseURLString(payload.whisperBaseURL)
+        configuration.whisperModel = payload.whisperModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.whisperLanguage = payload.whisperLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.whisperAPIKey {
+            configuration.whisperAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        configuration.elevenLabsBaseURL = Self.normalizeBaseURLString(payload.elevenLabsBaseURL)
+        configuration.elevenLabsModel = payload.elevenLabsModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.elevenLabsLanguage = payload.elevenLabsLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.elevenLabsAPIKey {
+            configuration.elevenLabsAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        configuration.elevenLabsRealtimeBaseURL = Self.normalizeBaseURLString(payload.elevenLabsRealtimeBaseURL)
+        configuration.elevenLabsRealtimeModel = payload.elevenLabsRealtimeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.elevenLabsRealtimeLanguage = payload.elevenLabsRealtimeLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.elevenLabsRealtimeAPIKey {
+            configuration.elevenLabsRealtimeAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        configuration.doubaoBaseURL = Self.normalizeBaseURLString(payload.doubaoBaseURL)
+        configuration.doubaoResourceId = payload.doubaoResourceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        configuration.doubaoLanguage = payload.doubaoLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.doubaoAPIKey {
+            configuration.doubaoAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        configuration.polishBaseURL = Self.normalizeBaseURLString(payload.polishBaseURL)
+        configuration.polishModelName = payload.polishModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = payload.polishAPIKey {
+            configuration.polishAPIKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         try persist()
     }
 
-    func clearAPIKey() throws {
-        configuration.apiKey = ""
+    func clearWhisperAPIKey() throws {
+        configuration.whisperAPIKey = ""
         try persist()
     }
 
@@ -296,9 +556,36 @@ final class SettingsStore {
         try persist()
     }
 
-    static let defaultBaseURLString = "https://openrouter.ai/api/v1"
-    static let defaultTranscriptionModel = "openai/whisper-large-v3-turbo"
+    func clearElevenLabsAPIKey() throws {
+        configuration.elevenLabsAPIKey = ""
+        try persist()
+    }
+
+    func clearElevenLabsRealtimeAPIKey() throws {
+        configuration.elevenLabsRealtimeAPIKey = ""
+        try persist()
+    }
+
+    func clearDoubaoAPIKey() throws {
+        configuration.doubaoAPIKey = ""
+        try persist()
+    }
+
+    func clearPolishAPIKey() throws {
+        configuration.polishAPIKey = ""
+        try persist()
+    }
+
+    static let defaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+    static let defaultDeepgramBaseURL = "wss://api.deepgram.com/v1/listen"
+    static let defaultElevenLabsBaseURL = "https://api.elevenlabs.io"
+    static let defaultElevenLabsRealtimeBaseURL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
+    static let defaultDoubaoBaseURL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    static let defaultDoubaoResourceId = "volc.seedasr.sauc.duration"
+    static let defaultWhisperModel = "openai/whisper-large-v3-turbo"
     static let defaultPolishModel = "openai/gpt-5.4-mini"
+    static let defaultElevenLabsModel = "scribe_v2"
+    static let defaultElevenLabsRealtimeModel = "scribe_v2_realtime"
     static let defaultLanguage = RecognitionLanguage.auto
     static let defaultDuckingLevel: Double = 0.1
     static let defaultMicrophonePreference: MicrophonePreference = .systemDefault
@@ -404,10 +691,12 @@ final class SettingsStore {
 }
 
 private struct Configuration: Codable {
+    // Legacy combined fields (still persisted for backward read; new code routes through *_API_KEY etc.).
     var apiKey: String
     var baseURL: String
     var transcriptionModel: String
     var polishModel: String
+
     var outputMode: OutputMode
     var language: RecognitionLanguage
     var polishWithGPT: Bool
@@ -415,14 +704,48 @@ private struct Configuration: Codable {
     var duckingLevel: Double
     var preferredMicrophone: MicrophonePreference
     var transcriptionProvider: TranscriptionProvider
+
+    // Deepgram (streaming)
     var deepgramAPIKey: String
+    var deepgramBaseURL: String
     var deepgramModel: String
+    var deepgramLanguage: String
+
+    // OpenRouter Whisper (batch)
+    var whisperAPIKey: String
+    var whisperBaseURL: String
+    var whisperModel: String
+    var whisperLanguage: String
+
+    // ElevenLabs Scribe (batch)
+    var elevenLabsAPIKey: String
+    var elevenLabsBaseURL: String
+    var elevenLabsModel: String
+    var elevenLabsLanguage: String
+
+    // ElevenLabs Scribe v2 Realtime (streaming, wss://)
+    var elevenLabsRealtimeAPIKey: String
+    var elevenLabsRealtimeBaseURL: String
+    var elevenLabsRealtimeModel: String
+    var elevenLabsRealtimeLanguage: String
+
+    // Doubao (Volcengine SAUC, streaming, wss://)
+    var doubaoAPIKey: String
+    var doubaoBaseURL: String
+    var doubaoResourceId: String
+    var doubaoLanguage: String
+
+    // Polish (text formalization, separate from any STT provider)
+    var polishAPIKey: String
+    var polishBaseURL: String
+    var polishModelName: String
 
     init() {
         self.apiKey = ""
-        self.baseURL = SettingsStore.defaultBaseURLString
-        self.transcriptionModel = SettingsStore.defaultTranscriptionModel
+        self.baseURL = SettingsStore.defaultOpenRouterBaseURL
+        self.transcriptionModel = SettingsStore.defaultWhisperModel
         self.polishModel = SettingsStore.defaultPolishModel
+
         self.outputMode = .pasteAtCursor
         self.language = SettingsStore.defaultLanguage
         self.polishWithGPT = true
@@ -430,8 +753,35 @@ private struct Configuration: Codable {
         self.duckingLevel = SettingsStore.defaultDuckingLevel
         self.preferredMicrophone = SettingsStore.defaultMicrophonePreference
         self.transcriptionProvider = SettingsStore.defaultTranscriptionProvider
+
         self.deepgramAPIKey = ""
+        self.deepgramBaseURL = SettingsStore.defaultDeepgramBaseURL
         self.deepgramModel = SettingsStore.defaultDeepgramModel
+        self.deepgramLanguage = "multi"
+
+        self.whisperAPIKey = ""
+        self.whisperBaseURL = SettingsStore.defaultOpenRouterBaseURL
+        self.whisperModel = SettingsStore.defaultWhisperModel
+        self.whisperLanguage = ""
+
+        self.elevenLabsAPIKey = ""
+        self.elevenLabsBaseURL = SettingsStore.defaultElevenLabsBaseURL
+        self.elevenLabsModel = SettingsStore.defaultElevenLabsModel
+        self.elevenLabsLanguage = ""
+
+        self.elevenLabsRealtimeAPIKey = ""
+        self.elevenLabsRealtimeBaseURL = SettingsStore.defaultElevenLabsRealtimeBaseURL
+        self.elevenLabsRealtimeModel = SettingsStore.defaultElevenLabsRealtimeModel
+        self.elevenLabsRealtimeLanguage = ""
+
+        self.doubaoAPIKey = ""
+        self.doubaoBaseURL = SettingsStore.defaultDoubaoBaseURL
+        self.doubaoResourceId = SettingsStore.defaultDoubaoResourceId
+        self.doubaoLanguage = ""
+
+        self.polishAPIKey = ""
+        self.polishBaseURL = SettingsStore.defaultOpenRouterBaseURL
+        self.polishModelName = SettingsStore.defaultPolishModel
     }
 
     init(from decoder: Decoder) throws {
@@ -440,10 +790,16 @@ private struct Configuration: Codable {
         let languageRaw = try container.decodeIfPresent(String.self, forKey: .language) ?? ""
         let migratedLanguageRaw = SettingsStore.migrateLanguageCode(languageRaw)
 
-        self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
-        self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? SettingsStore.defaultBaseURLString
-        self.transcriptionModel = try container.decodeIfPresent(String.self, forKey: .transcriptionModel) ?? SettingsStore.defaultTranscriptionModel
-        self.polishModel = try container.decodeIfPresent(String.self, forKey: .polishModel) ?? SettingsStore.defaultPolishModel
+        let legacyAPIKey = try container.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        let legacyBaseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? SettingsStore.defaultOpenRouterBaseURL
+        let legacyTranscriptionModel = try container.decodeIfPresent(String.self, forKey: .transcriptionModel) ?? SettingsStore.defaultWhisperModel
+        let legacyPolishModel = try container.decodeIfPresent(String.self, forKey: .polishModel) ?? SettingsStore.defaultPolishModel
+
+        self.apiKey = legacyAPIKey
+        self.baseURL = legacyBaseURL
+        self.transcriptionModel = legacyTranscriptionModel
+        self.polishModel = legacyPolishModel
+
         self.outputMode = OutputMode(rawValue: outputModeRaw) ?? .pasteAtCursor
         self.language = RecognitionLanguage(rawValue: migratedLanguageRaw) ?? SettingsStore.defaultLanguage
         self.polishWithGPT = try container.decodeIfPresent(Bool.self, forKey: .polishWithGPT) ?? true
@@ -454,15 +810,43 @@ private struct Configuration: Codable {
         self.preferredMicrophone = MicrophonePreference(rawValue: micRaw) ?? SettingsStore.defaultMicrophonePreference
 
         let providerRaw = try container.decodeIfPresent(String.self, forKey: .transcriptionProvider) ?? ""
-        if let provider = TranscriptionProvider(rawValue: providerRaw) {
-            self.transcriptionProvider = provider
-        } else {
-            // Existing installs without this field stay on the OpenRouter Whisper path
-            // until the user opts in to Deepgram from Settings.
-            self.transcriptionProvider = .openRouterWhisper
-        }
+        self.transcriptionProvider = TranscriptionProvider(rawValue: providerRaw) ?? .openRouterWhisper
+
+        // Deepgram
         self.deepgramAPIKey = try container.decodeIfPresent(String.self, forKey: .deepgramAPIKey) ?? ""
+        self.deepgramBaseURL = try container.decodeIfPresent(String.self, forKey: .deepgramBaseURL) ?? SettingsStore.defaultDeepgramBaseURL
         self.deepgramModel = try container.decodeIfPresent(String.self, forKey: .deepgramModel) ?? SettingsStore.defaultDeepgramModel
+        self.deepgramLanguage = try container.decodeIfPresent(String.self, forKey: .deepgramLanguage) ?? "multi"
+
+        // Whisper — fall back to legacy apiKey/baseURL/transcriptionModel for upgrades.
+        self.whisperAPIKey = (try container.decodeIfPresent(String.self, forKey: .whisperAPIKey)) ?? legacyAPIKey
+        self.whisperBaseURL = (try container.decodeIfPresent(String.self, forKey: .whisperBaseURL)) ?? legacyBaseURL
+        self.whisperModel = (try container.decodeIfPresent(String.self, forKey: .whisperModel)) ?? legacyTranscriptionModel
+        self.whisperLanguage = try container.decodeIfPresent(String.self, forKey: .whisperLanguage) ?? ""
+
+        // ElevenLabs (always defaults; new install)
+        self.elevenLabsAPIKey = try container.decodeIfPresent(String.self, forKey: .elevenLabsAPIKey) ?? ""
+        self.elevenLabsBaseURL = try container.decodeIfPresent(String.self, forKey: .elevenLabsBaseURL) ?? SettingsStore.defaultElevenLabsBaseURL
+        self.elevenLabsModel = try container.decodeIfPresent(String.self, forKey: .elevenLabsModel) ?? SettingsStore.defaultElevenLabsModel
+        self.elevenLabsLanguage = try container.decodeIfPresent(String.self, forKey: .elevenLabsLanguage) ?? ""
+
+        // ElevenLabs Realtime — share key/language with batch ElevenLabs by default for convenience.
+        let elevenLabsKeyForFallback = try container.decodeIfPresent(String.self, forKey: .elevenLabsAPIKey) ?? ""
+        self.elevenLabsRealtimeAPIKey = (try container.decodeIfPresent(String.self, forKey: .elevenLabsRealtimeAPIKey)) ?? elevenLabsKeyForFallback
+        self.elevenLabsRealtimeBaseURL = try container.decodeIfPresent(String.self, forKey: .elevenLabsRealtimeBaseURL) ?? SettingsStore.defaultElevenLabsRealtimeBaseURL
+        self.elevenLabsRealtimeModel = try container.decodeIfPresent(String.self, forKey: .elevenLabsRealtimeModel) ?? SettingsStore.defaultElevenLabsRealtimeModel
+        self.elevenLabsRealtimeLanguage = try container.decodeIfPresent(String.self, forKey: .elevenLabsRealtimeLanguage) ?? ""
+
+        // Doubao (Volcengine SAUC)
+        self.doubaoAPIKey = try container.decodeIfPresent(String.self, forKey: .doubaoAPIKey) ?? ""
+        self.doubaoBaseURL = try container.decodeIfPresent(String.self, forKey: .doubaoBaseURL) ?? SettingsStore.defaultDoubaoBaseURL
+        self.doubaoResourceId = try container.decodeIfPresent(String.self, forKey: .doubaoResourceId) ?? SettingsStore.defaultDoubaoResourceId
+        self.doubaoLanguage = try container.decodeIfPresent(String.self, forKey: .doubaoLanguage) ?? ""
+
+        // Polish — fall back to legacy fields too.
+        self.polishAPIKey = (try container.decodeIfPresent(String.self, forKey: .polishAPIKey)) ?? legacyAPIKey
+        self.polishBaseURL = (try container.decodeIfPresent(String.self, forKey: .polishBaseURL)) ?? legacyBaseURL
+        self.polishModelName = (try container.decodeIfPresent(String.self, forKey: .polishModelName)) ?? legacyPolishModel
     }
 }
 

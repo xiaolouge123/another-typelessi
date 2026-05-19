@@ -1,10 +1,12 @@
 import Foundation
 
-struct DeepgramTranscriptResult {
+/// Shared result type for any streaming STT provider (Deepgram, ElevenLabs Realtime, ...).
+struct StreamingTranscriptResult {
     let text: String
     let model: String
     let audioSeconds: Double
     let cost: Double
+    let provider: UsageProvider
 }
 
 enum DeepgramStreamingError: LocalizedError {
@@ -50,10 +52,19 @@ final class DeepgramStreamingClient {
     func runSession(
         pcm: AsyncStream<Data>,
         apiKey: String,
+        baseURL: String,
         model: String,
-        language: RecognitionLanguage
-    ) async throws -> DeepgramTranscriptResult {
-        var components = URLComponents(string: "wss://api.deepgram.com/v1/listen")!
+        language: String
+    ) async throws -> StreamingTranscriptResult {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endpoint = trimmedBase.isEmpty ? "wss://api.deepgram.com/v1/listen" : trimmedBase
+        guard var components = URLComponents(string: endpoint) else {
+            throw DeepgramStreamingError.invalidResponse
+        }
+
+        let languageCode = language.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveLanguage = languageCode.isEmpty ? "multi" : languageCode
+
         components.queryItems = [
             URLQueryItem(name: "encoding", value: "linear16"),
             URLQueryItem(name: "sample_rate", value: "16000"),
@@ -61,8 +72,8 @@ final class DeepgramStreamingClient {
             URLQueryItem(name: "model", value: model),
             URLQueryItem(name: "smart_format", value: "true"),
             URLQueryItem(name: "interim_results", value: "true"),
-            URLQueryItem(name: "endpointing", value: "300"),
-            URLQueryItem(name: "language", value: language.deepgramLanguageCode)
+            URLQueryItem(name: "endpointing", value: "false"),
+            URLQueryItem(name: "language", value: effectiveLanguage)
         ]
 
         guard let url = components.url else {
@@ -77,7 +88,7 @@ final class DeepgramStreamingClient {
 
         let collector = TranscriptCollector()
         let startedAt = Date()
-        Self.log("connect model=\(model) language=\(language.deepgramLanguageCode)")
+        Self.log("connect model=\(model) language=\(effectiveLanguage) endpointing=false")
 
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -126,11 +137,12 @@ final class DeepgramStreamingClient {
             ? (audioSeconds / 60.0) * Self.pricePerMinuteUSD
             : 0
 
-        return DeepgramTranscriptResult(
+        return StreamingTranscriptResult(
             text: text,
             model: resolvedModel,
             audioSeconds: audioSeconds,
-            cost: cost
+            cost: cost,
+            provider: .deepgram
         )
     }
 

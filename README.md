@@ -6,7 +6,7 @@ Press `Fn` to start recording, press it again to stop, and the app will:
 
 1. Record local audio from the microphone.
 2. Transcribe the audio. By default it streams to Deepgram (Nova-3) while you speak, so the transcript is ready almost as soon as you release `Fn`. You can switch to OpenRouter Whisper from Settings to upload the full WAV after recording instead.
-3. Send the transcript to OpenRouter (`openai/gpt-5.4-mini` by default) for cleanup and formalization.
+3. Send the transcript to OpenRouter (`openai/gpt-5.4-mini` by default) for cleanup and formalization. **The app learns from your corrections**: if you edit the pasted text, it monitors the changes and uses them to improve future transcriptions.
 4. Paste the final text into the current cursor position, or copy it to the clipboard.
 
 During recording and processing, a compact floating status indicator appears near the bottom center of the screen. It shows recording, transcribing, polishing, success, and error states.
@@ -34,6 +34,7 @@ From the settings window you can configure:
 - OpenRouter API key, base URL, and formalization model (used for GPT polish, plus the optional Whisper batch path)
 - Output mode, transcription language, and clipboard behavior
 - Weekly usage analysis split by stage/provider/model, with call counts, token counts, audio duration, and cost
+- **Correction History**: View and manage the corrections the app has learned from your edits (see [CORRECTION_FEATURE.md](CORRECTION_FEATURE.md) for details)
 
 Use `Auto Detect` for transcription language if you switch between Chinese and English. With Deepgram the app uses the `multi` language model, and with Whisper it omits the language hint. GPT polish is instructed to never translate the transcript.
 

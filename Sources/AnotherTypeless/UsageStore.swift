@@ -26,6 +26,8 @@ enum UsageOperation: String, Codable {
 enum UsageProvider: String, Codable {
     case openrouter
     case deepgram
+    case elevenLabs
+    case doubao
 
     var title: String {
         switch self {
@@ -33,6 +35,10 @@ enum UsageProvider: String, Codable {
             return "OpenRouter"
         case .deepgram:
             return "Deepgram"
+        case .elevenLabs:
+            return "ElevenLabs"
+        case .doubao:
+            return "Doubao"
         }
     }
 }
@@ -175,7 +181,7 @@ struct WeeklyModelUsage: Identifiable {
 
     var audioText: String {
         switch provider {
-        case .deepgram:
+        case .deepgram, .elevenLabs, .doubao:
             return String(format: "%.1fs", audioSeconds)
         case .openrouter:
             return Self.integerFormatter.string(from: NSNumber(value: audioTokens)) ?? "\(audioTokens)"

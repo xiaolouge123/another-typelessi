@@ -9,15 +9,19 @@ final class OpenRouterClient {
 
     func transcribe(
         audioURL: URL,
-        language: RecognitionLanguage,
+        language: String,
         baseURL: URL,
         transcriptionModel: String,
         apiKey: String
     ) async throws -> OpenRouterTextResult {
         let audioData = try Data(contentsOf: audioURL)
+
+        // Only include language if it's not empty
+        let languageCode = language.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let requestBody = TranscriptionRequest(
             model: transcriptionModel,
-            language: language.transcriptionLanguageCode,
+            language: languageCode.isEmpty ? nil : languageCode,
             inputAudio: InputAudio(
                 data: audioData.base64EncodedString(),
                 format: "wav"
@@ -52,11 +56,35 @@ final class OpenRouterClient {
         language: RecognitionLanguage,
         baseURL: URL,
         polishModel: String,
-        apiKey: String
+        apiKey: String,
+        correctionContext: [CorrectionRecord] = []
     ) async throws -> OpenRouterTextResult {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return OpenRouterTextResult(text: "", model: polishModel, usage: nil)
+        }
+
+        // Build correction context if available
+        let contextSection: String
+        if !correctionContext.isEmpty {
+            let examples = correctionContext.suffix(20).map { record in
+                "  \"\(record.asrOutput)\" → \"\(record.userCorrected)\""
+            }.joined(separator: "\n")
+
+            contextSection = """
+
+
+            The user has previously corrected these speech recognition errors:
+            \(examples)
+
+            Use these corrections as reference to fix similar errors in the current transcript.
+            Pay special attention to:
+            - Technical terms and proper nouns that were corrected
+            - Common homophones and near-sounding words
+            - Capitalization and formatting patterns
+            """
+        } else {
+            contextSection = ""
         }
 
         let requestBody = ChatCompletionRequest(
@@ -103,7 +131,7 @@ final class OpenRouterClient {
                     Do not translate. Polish in the transcript's original language.
                     Use the full transcript context to fix likely speech-recognition mistakes, but only when the intended wording is strongly implied.
                     Reorder scattered spoken phrasing into clearer written order without changing the user's meaning.
-                    If the transcript naturally contains several points, organize them into a cleaner written format.
+                    If the transcript naturally contains several points, organize them into a cleaner written format.\(contextSection)
 
                     Transcript:
                     \(trimmed)
